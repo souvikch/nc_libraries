@@ -1,0 +1,1 @@
+idf_component_register(SRCS "nc_ds1307.c" INCLUDE_DIRS "include" REQUIRES nc_common nc_device nc_property nc_i2c)
