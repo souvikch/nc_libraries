@@ -5,6 +5,14 @@ Reusable NimbleController controller-side libraries for NC-BUS contracts, transp
 **Current development branch:** `nc-lib-i2c-framework`  
 **Status:** Architecture and I2C driver foundations; NC-BUS is not yet fully implemented or production-validated.
 
+## Architecture documents
+
+- [NC-BUS core specification](docs/nc-bus-specification.md)
+- [NC-BUS object architecture](docs/nc-bus-architecture.md)
+- [Runtime integration boundary](docs/runtime-integration.md)
+- [Architecture overview](docs/architecture.md)
+- [Implementation and validation checklist](docs/next-steps.md)
+
 ## Architectural intent
 
 NC-BUS is the system-wide logical bus/data contract for sensors, devices, and controller nodes across multiple transports, including Ethernet. Its portable core defines logical identities, operations, typed values/status, dispatch interfaces and bounded behavior without depending on ESP-IDF or a specific transport.
