@@ -1,184 +1,274 @@
 # NC-BUS Core Architecture and Contract
 
-**Status:** Initial architecture contract  
-**Scope:** Portable logical bus for NimbleController  
-**Target repository:** `souvikch/nc_libraries`
+**Document ID:** NC-LIB-BUS-001  
+**Version:** 0.2 (architecture aligned with nimble-runtime)  
+**Status:** Draft for implementation  
+**Repository:** `souvikch/nc_libraries`  
+**Development branch:** `nc-lib-i2c-framework`
 
-## 1. Purpose
+## 1. Purpose and scope
 
-NC-BUS is the system-wide communication and data bus connecting sensors, devices, and controller nodes across local and network transports. It provides a consistent logical model without requiring every transport to have the same physical capabilities.
+NC-BUS is NimbleController's system-wide logical bus connecting sensors, devices, and controller nodes over multiple communication protocols, including Ethernet. It provides stable logical identities and common device/data operations while preserving the constraints and failure semantics of each transport.
 
-NC-BUS is not synonymous with I²C, Ethernet, or a sensor registry. It includes a portable core and pluggable transport adapters.
+NC-BUS is not just an I²C wrapper, a sensor registry, or the Runtime's Virtual Resource Registry. It is the portable controller-side bus contract and communication/data abstraction. The NimbleController Runtime remains authoritative for the system Digital Twin, topology, resource allocation, constraints, and provisioning. The controller executes the validated model delivered to it.
 
-## 2. Architectural layers
+This specification is aligned to the `nimble-runtime` architecture documents, especially:
+- `docs/architecture/System_Architecture.md`
+- `docs/architecture/Hardware_Abstraction_Architecture.md`
+- `docs/architecture/Firmware_Architecture.md`
+- `docs/architecture/Runtime Architecture.md`
+- `docs/architecture/Part III — Platform Architecture.md`
+- `docs/architecture/Part V — Runtime Models.md`
 
-1. **NC-BUS core (portable):** identities, endpoints, message envelopes, routing decisions, capabilities, lifecycle, error model, and bounded resource policies.
-2. **Data/property model (portable):** typed properties, units, access rights, validity, timestamps, and optional quality/status.
-3. **Transport adapters:** move messages or execute local transactions over a specific medium. Initial transport: I²C. Network transport: Ethernet/IP, introduced after message framing and security requirements are agreed.
-4. **Device drivers:** implement device-specific register/protocol behavior, e.g. TCA9548A, DS1307, PCF8575, ADS1115, and SHT-series sensors.
-5. **Node integration:** exposes local devices and exchanges logical device data with remote nodes.
-6. **NimbleController integration:** consumes NC-BUS device/property APIs for automation, management, and application logic.
+The Runtime repository is authoritative for Runtime architecture. This document specifies only the contracts needed inside the library/controller domain and does not redefine Runtime responsibilities.
 
-Dependencies point inward: drivers and transport adapters depend on core interfaces; the core must not depend on ESP-IDF, Arduino, sockets, or a specific hardware driver.
+## 2. Architectural rules derived from nimble-runtime
 
-## 3. Core concepts
+1. Application and automation code must not access hardware directly.
+2. Applications consume Virtual Resources; they do not address physical devices, GPIO numbers, I²C addresses, or network sockets.
+3. Every physical device has a driver; bus managers implement communication infrastructure and never device-specific behavior.
+4. Device registration, capability registration, and virtual-resource registration remain distinct responsibilities. NC-BUS must not become a second Runtime Registry or allocate Virtual Resources.
+5. Runtime owns policy, topology, constraints, provisioning, resource allocation, and the Digital Twin. A controller executes the validated model and reports state/telemetry.
+6. Platform Profile describes fixed controller infrastructure and bus topology; Device Profile describes provisioned devices and their logical/resource mappings.
+7. Components need explicit ownership, lifecycle, state and relationships. No hidden/circular dependencies.
+8. Event-oriented communication is preferred across services, but direct calls are acceptable for bounded local driver transactions.
+9. Keep ESP-IDF, FreeRTOS, Arduino, sockets, and hardware-specific symbols out of the portable NC-BUS core.
+10. Use bounded resources, finite deadlines, centralized error semantics, and observable health/status.
 
-### 3.1 Identity and addressing
+## 3. Layered model
 
-- Every logical node and device has a stable logical identifier that is independent of transport addresses.
-- A transport endpoint is separate metadata: for example I²C controller + address + mux route, or Ethernet interface + network endpoint.
-- Addresses are not globally unique device identities. An I²C address may be reused on separate mux channels.
-- Routing resolves a logical destination to one or more configured endpoints. The core must not assume that every endpoint is directly reachable.
+```text
+NimbleController Runtime
+  - Digital Twin, topology, policy, compilation, resource allocation
+  - Sends validated Runtime Model / provisioning to controller
+                  |
+         MQTT / defined network contract
+                  |
+Controller Runtime Integration
+  - applies compiled resources and commands
+  - reports runtime state and telemetry
+                  |
+Virtual Resource Engine / Controller Runtime Registry
+  - logical application-facing resources, capabilities, current state
+                  |
+NC-BUS Core (portable)
+  - local/remote logical device access contract
+  - stable IDs, operations, value/status envelope, dispatch interfaces
+                  |
+NC-BUS Transport and Bus Managers
+  - I²C / SPI / UART / GPIO / Ethernet-IP / future transports
+                  |
+Device Drivers / protocol endpoints
+  - TCA9548A, DS1307, PCF8575, ADS1115, SHT-series, etc.
+                  |
+             Physical hardware
+```
 
-### 3.2 Device descriptor
+This is a responsibility view, not a requirement that all traffic traverse each layer synchronously. Local sensor reads may be direct bounded calls; remote-node interactions require a defined network message path.
 
-A device descriptor should carry:
-- stable device ID and owning node ID;
-- device type / driver identifier and schema version;
-- supported capabilities;
-- configured endpoint(s);
-- lifecycle/availability state;
-- optional human-readable label, kept out of hot-path lookup keys.
+### 3.1 NC-BUS Core
 
-Device registration must validate required fields and reject duplicate IDs. Registration does not itself guarantee that the physical device is reachable.
+Portable C library, independent of ESP-IDF and any specific transport. Defines:
+- logical node and device identifiers;
+- operation and property identifiers;
+- request/result structures;
+- capability and permission checks;
+- bounded payload/value representation;
+- deadline and correlation semantics where request/response applies;
+- common status/error categories;
+- routing/dispatch interfaces that operate on configured endpoint records;
+- device availability and lifecycle events or callbacks.
 
-### 3.3 Properties and values
+It does not own system policy, compile profiles, allocate application resources, manage Runtime services, or implement a physical protocol.
 
-A property descriptor defines:
-- stable property ID within the device;
-- value type (boolean, signed/unsigned integer, float, string/bytes only where needed, or structured type with an explicit schema);
-- unit and scale where applicable;
-- read/write permissions;
-- constraints/range where applicable;
-- optional sampling/update behavior.
+### 3.2 Virtual Resource Engine and Runtime Registry
 
-A property value carries the typed value, status/quality, and timestamp where meaningful. Failed reads must not silently overwrite a previously valid value with a fabricated default. String names are for configuration and diagnostics; runtime operations should use numeric/enumerated IDs or pre-resolved handles.
+These are controller/runtime concepts from nimble-runtime. They map validated logical resources and capabilities to driver operations. NC-BUS provides the device/transport operation interfaces they can use; it does not replace the authoritative registry or create a second virtual-resource allocation system.
 
-### 3.4 Messages and operations
+### 3.3 Transport and bus managers
 
-The logical API must support at minimum:
-- read property;
-- write property (where allowed);
-- invoke a device operation;
-- publish value/state change;
-- report device/transport status.
+Transport implementations own connection/device handles, bus initialization, arbitration/serialization, finite timeouts, transport recovery, and transport-specific errors. They expose transport-specific endpoints to NC-BUS through narrow adapters.
 
-Operations have a destination device ID, operation/property ID, bounded payload, request/correlation ID when request-response is used, deadline/timeout, and a typed result/error. The initial implementation may use in-process calls for local devices; the logical contract must not bake in that implementation detail.
+### 3.4 Device drivers
 
-### 3.5 Capabilities
+Each driver owns the register-level semantics, initialization, data conversion, capability description, and driver-specific failure reporting for one hardware device type. Drivers must not hard-code application logic or directly call peer drivers. Shared hardware interaction goes through the bus manager; higher-level dependencies are declared in configuration or an orchestration/sequence component.
 
-Capabilities describe supported operations and constraints, not merely device type. Consumers must check capability/permissions before writes or method invocation. Capability discovery should be bounded and cacheable.
+## 4. Identity, endpoints and topology
 
-## 4. Transport contract
+Logical identity must not be inferred from a physical address.
 
-A transport adapter is responsible for:
-- initialization and shutdown;
-- validating transport-specific endpoint configuration;
-- sending/receiving bounded frames or executing bounded local operations;
-- mapping transport errors to NC-BUS error categories;
-- reporting link/endpoint state;
-- enforcing deadlines and transport-specific limits.
+- **Node ID:** stable controller/node identity assigned by the established NimbleController provisioning/runtime contract.
+- **Device ID:** stable per-device identity within the configured system/controller namespace. The final canonical format must match the existing provisioning/runtime schemas before ABI freeze.
+- **Capability ID:** capability exposed by a device/driver.
+- **Property ID / Operation ID:** stable numeric or enum identifiers for hot-path operations; human-readable names belong in configuration and diagnostics.
+- **Endpoint:** transport-specific connection details.
+  - I²C: controller/bus identifier, 7-bit address, speed/policy, optional mux route.
+  - Ethernet: network-interface and authenticated peer/endpoint metadata, with framing defined by a separate network contract.
+  - SPI/UART/GPIO and later protocols: their own typed endpoint data.
+- **Topology:** Platform Profile defines fixed buses and integrated devices; Device Profile defines provisioned endpoints and mappings. NC-BUS consumes validated topology; Runtime remains its authority.
 
-A transport adapter must not own application policy or redefine logical device identity. The core must not assume reliable delivery, ordering, broadcast support, or equivalent security across transports.
+The same I²C address may exist behind different TCA9548A channels. The I²C address is endpoint data, not a global ID.
 
-### Initial I²C mapping
+## 5. Data and operation contract
 
-I²C is a local peripheral transport, not a general remote-node protocol. Its endpoint metadata includes controller/bus identity, 7-bit device address, speed/configuration, and optional routing path such as a TCA9548A channel.
+Initial logical operations:
+- read property/value;
+- write a writable property;
+- invoke a declared device operation;
+- publish value/state update;
+- report device/endpoint health and availability.
 
-For muxed I²C, mux selection and the dependent downstream transaction must be serialized as one critical section. Separate calls that permit another task to change the mux between selection and transfer are unsafe. Timeouts and transfer lengths must be bounded.
+Each request must have a bounded operation/payload size and finite deadline. Request/response operations use a correlation ID where needed. Results carry a typed outcome and normalized error. Fire-and-forget publication must not be represented as confirmed remote execution.
 
-The PCF8575 is an I²C GPIO-expander driver. If its GPIO state must be set before ADS1115 sampling, that dependency belongs in an explicit device configuration or coordination/sequence layer; the generic I²C transport and NC-BUS core must not hard-code it.
+Property descriptors should define:
+- numeric/enum property ID and schema/version;
+- value type and unit/scale;
+- read/write/command permissions;
+- allowable range/constraints where applicable;
+- sampling/update behavior where applicable.
 
-### Ethernet mapping
+Values should separate:
+- value bytes/type;
+- validity and quality/status;
+- capture/update timestamp if available;
+- optional sequence/version metadata.
 
-Ethernet/IP is a network transport and may connect nodes. Before implementation, define framing/versioning, maximum frame size, node authentication, authorization, replay handling where relevant, connection lifecycle, and compatibility behavior. Do not expose an unauthenticated network write path to device operations.
+A communication or conversion failure must not silently replace the last valid reading with a fake zero/default. Availability and last known measurement are separate states.
 
-## 5. Error model
+Prefer fixed-size values or caller-owned buffers in hot paths. Strings/bytes are supported only with explicit maximum lengths and ownership rules. Do not use dynamically allocated string-key maps for every read.
 
-Use stable typed error categories rather than parsing strings:
+## 6. Transport contract
+
+Each transport adapter shall:
+- have an explicit owner and initialize/stop lifecycle;
+- validate endpoint configuration;
+- execute bounded transactions or bounded frames;
+- apply finite timeout/deadline behavior;
+- serialize shared physical resources;
+- translate transport errors into NC-BUS categories while preserving diagnostic detail;
+- expose link/endpoint health;
+- document ordering, delivery, retry, broadcast and security properties.
+
+The core must not assume all transports provide identical reliability or security. Retry policy belongs to the caller/orchestrator and must consider whether the operation is idempotent.
+
+### 6.1 I²C and multiplexers
+
+I²C is local peripheral access; it is not a general node-network protocol. `nc_i2c` is a low-level I²C transaction interface; `nc_i2c_espidf` is its ESP-IDF implementation. These components must not be renamed as NC-BUS or embedded into the core.
+
+For TCA9548A routing, select-channel plus the dependent downstream transfer must be atomic under one shared lock. Independent select and transfer calls are not sufficient if other tasks can interleave. The lock owner should be the I²C/mux routing layer, with documented lock ordering and bounded waits.
+
+### 6.2 PCF8575 and ADS1115 dependency
+
+PCF8575 is an I²C GPIO expander driver, not a transport. If the board requires PCF8575 GPIO state (for example enable, reset, muxing, or signal conditioning) before ADS1115 conversion, express that relationship in the Platform/Device Profile or a higher-level sequence/coordination layer. Do not hard-code a PCF8575 dependency into the generic NC-BUS or I²C layer. The exact physical signal dependency still needs to be confirmed from the board design.
+
+### 6.3 Ethernet and remote nodes
+
+Ethernet is a physical/network link; TCP/IP and the chosen application framing provide the communication semantics. The NC-BUS Ethernet adapter should transport defined node messages and must not become an unauthenticated raw device-write interface.
+
+Before implementation, separately specify:
+- frame/message version and maximum size;
+- node/device identity binding to authenticated peers;
+- authentication and authorization;
+- integrity and replay protections where relevant;
+- connection/disconnect lifecycle and liveness;
+- deadlines, acknowledgements, duplicate handling and retry rules;
+- protocol compatibility/version negotiation;
+- error mapping and rate-limited diagnostics.
+
+Do not invent or duplicate the existing Runtime MQTT contract. If the existing Runtime message transport already carries node operations, use that contract through an adapter; only add direct Ethernet transport if there is a distinct requirement for it.
+
+## 7. Errors, lifecycle and state
+
+Normalized error categories must cover at least:
 - invalid argument/configuration;
-- not initialized / invalid lifecycle state;
-- not found / duplicate identity;
-- unsupported operation / permission denied;
-- timeout / deadline exceeded;
-- transport unavailable / link down;
-- protocol error / malformed payload;
-- device absent / device-level failure;
+- invalid lifecycle state/not initialized;
+- not found/duplicate logical ID;
+- unsupported operation/permission denied;
+- timeout/deadline exceeded;
+- transport unavailable/link down;
+- malformed protocol/payload;
+- device absent/device-level fault;
 - resource exhausted;
 - internal failure.
 
-Preserve the underlying transport or device error as diagnostic detail without requiring consumers to depend on vendor-specific error codes.
+The adapter may retain native/vendor error information as diagnostic detail.
 
-## 6. Reliability and resource rules
+Minimum device/endpoint lifecycle: `UNREGISTERED → REGISTERED → INITIALIZING → READY`, with transitions to `DEGRADED/UNAVAILABLE`, `STOPPING`, and `RETIRED` as appropriate. The final enum must be reconciled with existing NCCore/runtime contracts before ABI freeze. A transient bus failure does not erase logical registration. Lifecycle ownership must be singular.
 
-- Every potentially blocking operation has a finite timeout or deadline.
-- Every message/frame has a documented maximum size.
-- Queue depths, device counts, endpoint counts, and caches have explicit bounds.
-- No unbounded heap allocation in high-frequency read/write paths; prefer caller-owned storage, static allocation, or bounded pools.
-- Shared hardware resources must be synchronized. Lock ownership and lock ordering must be documented.
-- Retries are policy-controlled and only automatic when the operation is safe to retry. Do not blindly retry non-idempotent writes.
-- Device availability is distinct from the last known property value.
-- Diagnostics must be optional and rate-limited so they cannot exhaust memory or flood logs.
+## 8. Memory, concurrency and observability
 
-## 7. Lifecycle
+- Define maximum device, endpoint, descriptor, and in-flight request counts.
+- Avoid unbounded allocation in steady state.
+- All blocking operations have finite deadlines.
+- Synchronize every shared physical bus/endpoint.
+- Document ownership, lifetime, and copying rules for buffers and descriptors.
+- Do not spawn one task per device by default.
+- Use bounded queues and optional/rate-limited diagnostics.
+- Preserve last known valid values separately from endpoint health.
+- Provide counters for successes, errors, timeouts, recoveries, and current availability where appropriate.
+- Never claim production readiness until target builds, concurrency tests, fault-injection tests, and relevant hardware tests pass.
 
-Minimum device states:
-- unregistered;
-- registered;
-- initializing;
-- ready;
-- degraded/unavailable;
-- stopping.
-
-State transitions must be explicit. A transient transport error should not silently destroy registration. Recovery/reinitialization is performed by the owner of the device/transport lifecycle.
-
-## 8. Repository component boundaries
-
-Target component layout:
+## 9. Proposed repository component boundaries
 
 ```text
 components/
-  nc_common/                 # shared error and primitive types
-  nc_property/               # typed property descriptors/values
-  nc_bus/                    # portable logical bus contract and registry
-  nc_bus_transport_i2c/      # NC-BUS adapter for local I²C endpoints (when needed)
-  nc_bus_transport_ethernet/ # network adapter (later)
-  nc_i2c/                    # transport-level I²C transaction interface
-  nc_i2c_espidf/              # ESP-IDF implementation of nc_i2c
-  nc_tca9548a/               # I²C mux driver
-  nc_ds1307/                 # RTC driver
-  nc_pcf8575/                # GPIO expander driver
-  nc_ads1115/                # ADC driver
-  nc_sht/                    # selected SHT-series driver
+  nc_common/                  shared primitive/error types
+  nc_property/                typed property descriptors/values
+  nc_bus/                     portable NC-BUS contract and bounded dispatcher
+  nc_device/                  driver-facing device contract (reconcile with nc_bus)
+  nc_i2c/                     transport-level I²C transaction contract
+  nc_i2c_espidf/              ESP-IDF implementation of nc_i2c
+  nc_tca9548a/                 I²C mux driver/routing support
+  nc_ds1307/                  RTC driver
+  nc_pcf8575/                 GPIO-expander driver (to add)
+  nc_ads1115/                 ADC driver
+  nc_sht/                     selected SHT driver (exact part to confirm)
+  nc_bus_transport_ethernet/  only after network contract is approved
 ```
 
-The names `nc_i2c` and `nc_i2c_espidf` describe the hardware transaction layer. They are not replacements for NC-BUS. Do not create placeholder transport components until their public interfaces are defined.
+Do not create placeholder adapters until the exact interface has a use case and tests. The existing `nc_device` component overlaps conceptually with logical device descriptors; resolve that overlap before implementing a second registry or adding more parallel device structures.
 
-## 9. Current implementation mapping
+## 10. Runtime models required for the NC-BUS object specification
 
-The existing I²C driver framework is a starting point, not a complete NC-BUS implementation:
-- `nc_common`, `nc_property`, and `nc_device` are early foundations.
-- `nc_i2c` and `nc_i2c_espidf` provide the intended transport boundary.
-- `nc_tca9548a`, `nc_ds1307`, and `nc_ads1115` are device-driver work.
-- `nc_pcf8575` and `nc_sht` remain to be added.
-- NC-BUS logical routing, remote-node messaging, Ethernet transport, and end-to-end registration are not yet complete.
+Every major NC-BUS object must document all six nimble-runtime models:
+1. **Hierarchy:** where it resides and what it contains;
+2. **Ownership:** the single lifecycle owner;
+3. **Relationships:** uses/depends-on/creates/publishes/consumes/binds;
+4. **Lifecycle:** allowed state transitions;
+5. **State:** immutable definition versus mutable runtime status/value;
+6. **Interaction:** calls, events and message flow.
 
-## 10. Implementation sequence and acceptance gates
+At minimum, apply this template to: NC-BUS core, transport adapter, endpoint, device descriptor, property, operation request/result, route, and lifecycle/status event.
 
-1. Review and freeze public types/error codes in `nc_common`.
-2. Define typed property descriptors and values.
-3. Implement a portable `nc_bus` registry and local read/write/invoke contract with bounded storage.
-4. Add unit tests using fake endpoints/transports; test duplicate IDs, invalid descriptors, permissions, timeouts, and error propagation.
-5. Finalize I²C synchronization, including atomic mux selection plus downstream transaction.
-6. Register existing drivers as logical devices through a thin integration layer rather than coupling drivers directly to the bus core.
-7. Add PCF8575 and express its relationship to ADS1115 in configuration/coordination if the hardware requires it.
-8. Add network framing/security design before Ethernet implementation.
-9. Build against the project's actual ESP-IDF version and run hardware tests. Do not label the framework production-ready until build, concurrency, failure-recovery, and hardware tests pass.
+## 11. Integration sequence and acceptance gates
 
-## 11. Non-goals for the first core iteration
+1. **Architecture reconciliation:** compare these component APIs to the actual NCCore Bus Managers, Device Registry, Virtual Resource Engine, Platform Profile, Device Profile and remote-node contracts. Resolve names/ownership/ID formats before public ABI freeze.
+2. **Public primitive/error API:** expand common errors only after mapping them to the NCCore standardized error taxonomy.
+3. **Property contract:** use stable numeric/enum IDs and typed value/status; preserve bounded memory and explicit ownership.
+4. **NC-BUS core:** implement bounded device/endpoint registration and local operation dispatch with duplicate/permission/lifecycle tests. Avoid duplicating the Runtime Registry.
+5. **Transport contract:** settle endpoint API and error/deadline semantics.
+6. **I²C safety:** implement shared transaction locking and atomic mux select + downstream transaction.
+7. **Driver integration:** expose TCA9548A, DS1307, PCF8575, ADS1115, and SHT drivers through a thin adapter/descriptor layer. Keep register logic in drivers.
+8. **Node/network contract:** inspect existing MQTT/remote node contracts first; define Ethernet/IP adapter only for a justified path, with security and framing.
+9. **Validation:** build against the exact target ESP-IDF release; add fake-transport unit tests, concurrency/failure-injection tests, and hardware tests for missing devices, mux routing, PCF8575-to-ADS1115 sequencing, timeout and recovery.
+10. **Readiness:** do not label complete/production-ready until acceptance tests pass and memory/resource bounds are measured.
 
-- No assumption that NC-BUS is a single wire/protocol.
-- No dynamic string-based dispatch in the hot path.
-- No automatic discovery protocol until identity, trust, and resource limits are specified.
-- No claim of end-to-end delivery guarantees across transports until each adapter documents them.
-- No assumption that every device supports remote access, writes, events, or streaming.
+## 12. Current implementation status (branch audit)
+
+Implemented foundations visible in the branch:
+- `nc_common`, `nc_property`, and `nc_device`;
+- `nc_i2c` interface and `nc_i2c_espidf` adapter skeleton;
+- TCA9548A, DS1307, and ADS1115 driver components;
+- smoke-test application and initial architecture documentation.
+
+Not yet implemented/verified:
+- complete NC-BUS core registry/dispatch;
+- canonical ID/error schema alignment with NimbleController;
+- NC-BUS registration of current drivers;
+- atomic mux-routed transaction and proven shared locking;
+- PCF8575 driver and exact dependency sequencing;
+- selected SHT driver;
+- Ethernet/network node transport and security design;
+- build and hardware validation on the target setup.
+
+This is an architecture contract, not evidence of implementation completion.
