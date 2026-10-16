@@ -1,30 +1,74 @@
-# Architecture and design decisions
+# NC-BUS and Device Library Architecture
 
-## Implementation order
-1. TCA9548A I2C multiplexer.
-2. DS1307 real-time clock.
-3. ADS1115 ADC.
-4. Add the selected SHT-series temperature/humidity sensor once the exact model is confirmed.
+**Status:** Draft for implementation  
+**Aligned with:** `souvikch/nimble-runtime` architecture on `main`
+
+## Architectural authority
+
+The NimbleController Runtime documentation is authoritative for Runtime responsibilities. This repository defines reusable controller-side contracts, transport adapters, and device drivers; it must not introduce a competing Digital Twin, resource allocator, Virtual Resource Registry, provisioning system, or automation policy engine.
+
+The Runtime owns topology, policy, constraints, resource allocation, provisioning, and the Digital Twin. The controller executes validated resources and reports operational state and telemetry.
 
 ## Layering
-- Application and NC virtual sensor/data bus: logical resources, units, timestamps, quality and status. It must not expose GPIO pins or physical I2C addresses to application logic.
-- Device/property layer: typed configuration and values, capabilities, lifecycle, validation and error reporting.
-- Generic I2C API: address-based read/write and combined write/read transactions with bounded timeout.
-- Transport adapter: ESP-IDF I2C controller setup, driver handles, transaction serialization and error translation.
-- Device drivers: register semantics and sensor-specific conversion only.
 
-## Generic bus plus typed properties
-The generic bus is the correct shared abstraction. Keep its hot path small and typed; use property descriptors for introspection/configuration, not a dynamic string map for every transfer. Bus properties include clock speed and timeout policy. Device properties include device address, conversion rate, range, calibration, and readings. Separate read-only measured values from writable configuration.
+```text
+NimbleController Runtime
+  Digital Twin / provisioning / resource allocation / policy
+                         |
+                existing Runtime contract
+                         |
+Controller Runtime Integration
+  applies validated model / commands / telemetry
+                         |
+Virtual Resource Engine and controller registry
+  application-facing logical resources and capabilities
+                         |
+NC-BUS (portable logical device/data contract)
+                         |
+Transport and Bus Managers
+  I2C / SPI / UART / GPIO / Ethernet-IP / future
+                         |
+Device Drivers
+  TCA9548A / DS1307 / PCF8575 / ADS1115 / SHT
+                         |
+                    Hardware
+```
 
-## Reliability rules
-- One shared bus instance per physical controller.
-- Never initialize the same physical bus from individual device drivers.
-- Bound all waits and propagate transport errors.
-- Validate addresses, enum values and data ranges before I/O.
-- Serialize each physical transaction in the adapter.
-- For a muxed device, mux channel selection and the following device transaction must be atomic as a group. Do not permit another task to change the mux between those operations.
-- No unbounded allocation or per-device worker task by default.
-- Hardware tests must cover disconnected devices, bad addresses, concurrent access and recovery behavior.
+The diagram expresses responsibilities, not a requirement that every local register operation traverse every layer. Local drivers can make bounded synchronous calls through a bus manager; cross-node communication uses a defined network/runtime contract.
 
-## Current implementation boundary
-The generic I2C contract, ESP-IDF master adapter, TCA9548A control, DS1307 RTC operations, ADS1115 single-shot conversion, and smoke-test app are in this branch. Build and hardware validation are still required. A unified NC virtual sensor bus/registry is an integration layer and must be connected to the actual NCCore runtime contract rather than invented independently in this component repository.
+## Component ownership
+
+- `nc_common`: portable primitive types and normalized error foundation.
+- `nc_property`: typed property descriptors and values; avoid string-based hot-path dispatch.
+- `nc_bus`: portable logical operation, endpoint, identity, dispatch and status contract. It is not the Runtime's resource registry.
+- `nc_device`: existing driver-facing device API. Its overlap with logical device descriptors must be resolved before NC-BUS ABI is frozen.
+- `nc_i2c`: low-level local I2C transaction contract.
+- `nc_i2c_espidf`: ESP-IDF implementation of the I2C contract, including physical bus ownership, serialization and transport error mapping.
+- Device components: one driver per physical device type; no direct peer-driver calls.
+- Future Ethernet adapter: only after the existing Runtime MQTT/node contracts, framing, identity, and security are reviewed.
+
+## Device implementation sequence
+
+1. TCA9548A mux and routing safety.
+2. DS1307 RTC.
+3. PCF8575 GPIO expander.
+4. ADS1115 ADC, including explicit configured sequencing if PCF8575-controlled signals are prerequisites.
+5. Selected SHT-series device after exact part number is confirmed.
+
+PCF8575 belongs before ADS1115 integration in the project sequence. The driver itself must not hard-code the dependency; express it in the hardware profile/configuration or a coordination layer after the actual signal relationship is confirmed.
+
+## Rules
+
+- Application logic uses Virtual Resources, never GPIO numbers, I2C addresses, or socket details.
+- Platform Profile defines fixed controller hardware and bus topology; Device Profile defines provisioned devices and logical/resource mappings.
+- Runtime resource allocation/policy remains out of this library.
+- A logical ID is not a transport address.
+- All blocking operations have finite deadlines and bounded inputs.
+- Mux channel selection and downstream transaction are one synchronized critical section.
+- Preserve last valid property values on read failure; model availability and measurement separately.
+- Avoid unbounded allocation in steady-state and one task per device by default.
+- A build/hardware-ready status requires actual compilation, concurrency/fault tests, and hardware validation.
+
+## Canonical specification
+
+See [NC-BUS Core Architecture and Contract](nc-bus-specification.md).
