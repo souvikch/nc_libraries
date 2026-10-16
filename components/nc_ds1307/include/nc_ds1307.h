@@ -1,4 +1,5 @@
 #pragma once
+#include <stdbool.h>
 #include <stdint.h>
 #include "nc_device.h"
 #include "nc_i2c.h"
