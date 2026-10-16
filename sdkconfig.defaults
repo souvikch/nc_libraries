@@ -1,0 +1,2 @@
+# Default settings for the nc_libraries ESP-IDF project.
+# Target-specific settings should be added after the ESP-IDF target is selected.
