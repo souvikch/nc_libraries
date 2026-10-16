@@ -1,0 +1,1 @@
+idf_component_register(SRCS "app_main.c" INCLUDE_DIRS "." REQUIRES nc_common nc_device nc_property nc_i2c nc_ads1115)
