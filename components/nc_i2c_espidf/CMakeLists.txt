@@ -1,0 +1,1 @@
+idf_component_register(SRCS "nc_i2c_espidf.c" INCLUDE_DIRS "include" REQUIRES nc_common nc_i2c driver)
