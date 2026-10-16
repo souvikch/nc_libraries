@@ -1,0 +1,1 @@
+idf_component_register(SRCS "nc_tca9548a.c" INCLUDE_DIRS "include" REQUIRES nc_common nc_i2c)
