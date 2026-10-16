@@ -1,0 +1,1 @@
+idf_component_register(SRCS "nc_property.c" INCLUDE_DIRS "include" REQUIRES nc_common)
